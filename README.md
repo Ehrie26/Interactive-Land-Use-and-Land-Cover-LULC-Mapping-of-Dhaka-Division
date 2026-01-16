@@ -1,305 +1,80 @@
 # Interactive-Land-Use-and-Land-Cover-LULC-Mapping-of-Dhaka-Division
 
+This project presents an interactive Land Use and Land Cover (LULC) mapping and change detection application for Dhaka Division, Bangladesh, built using Google Earth Engine (GEE). The application leverages Sentinel-2 surface reflectance imagery and a Random Forest classifier to visualize spatial patterns and land cover dynamics between 2017 and 2023.
 
-ui.root.clear();
-
-var leftMap = ui.Map();
-var rightMap = ui.Map();
-
-leftMap.setControlVisibility(true);
-rightMap.setControlVisibility(true);
-
-// SPLIT PANEL (Slider Effect)
-
-var slider = ui.SplitPanel({
-  firstPanel: leftMap,
-  secondPanel: rightMap,
-  wipe: true
-});
-
-// MAIN LAYOUT
-
-var mainPanel = ui.Panel({
-  layout: ui.Panel.Layout.Flow('horizontal'),
-  style: {stretch: 'both'}
-});
-
-ui.root.add(mainPanel);
-mainPanel.add(slider);
-
-
-var sidePanel = ui.Panel({
-  style: { width: '330px', padding: '12px' }
-});
-mainPanel.add(sidePanel);
-
-// STUDY AREA
-
-var bangladeshStates = ee.FeatureCollection('FAO/GAUL/2015/level1');
-
-var dhaka = bangladeshStates.filter(
-  ee.Filter.eq('ADM1_NAME', 'Dhaka')
-);
-
-leftMap.centerObject(dhaka, 7);
-rightMap.centerObject(dhaka, 7);
-
-leftMap.addLayer(dhaka, {color: 'red'}, 'Dhaka Division');
-rightMap.addLayer(dhaka, {color: 'red'}, 'Dhaka Division');
-
-/*********************************
- * SENTINEL-2 COLLECTION
- *********************************/
-var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED');
-
-/*********************************
- * COMPOSITE FUNCTION
- *********************************/
-function getComposite(start, end, cloud) {
-  return s2
-    .filterBounds(dhaka)
-    .filterDate(start, end)
-    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', cloud))
-    .select('B.*')
-    .median()
-    .clip(dhaka);
-}
-
-/*********************************
- * YEARLY COMPOSITES
- *********************************/
-var composites = {
-  '2017': getComposite('2017-01-01', '2017-12-31', 20),
-  '2020': getComposite('2020-01-01', '2020-12-31', 5),
-  '2023': getComposite('2023-01-01', '2023-02-10', 5)
-};
-
-/*********************************
- * TRAINING DATA (UNCHANGED)
- *********************************/
-var training = Settlements
-  .merge(Vegetation)
-  .merge(Bareland)
-  .merge(water);
-
-/*********************************
- * SAMPLE REGIONS
- *********************************/
-var trainingSamples = composites['2023'].sampleRegions({
-  collection: training,
-  properties: ['Class'],
-  scale: 10
-});
-
-/*********************************
- * RANDOM FOREST CLASSIFIER
- *********************************/
-var classifier = ee.Classifier.smileRandomForest(50).train({
-  features: trainingSamples,
-  classProperty: 'Class',
-  inputProperties: composites['2023'].bandNames()
-});
-
-//CLASSIFICATION FUNCTION
- 
-function classify(img) {
-  return img.classify(classifier);
-}
-
-//TRUE CLASSIFIED IMAGES
- 
-var classified = {
-  '2017': classify(composites['2017']),
-  '2020': classify(composites['2020']),
-  '2023': classify(composites['2023'])
-};
-
-// VISUALIZATION SAFE (OPTION B)
-
-var classifiedVisual = {
-  '2017': classified['2017'].unmask(classified['2020']), // Fill gaps for display
-  '2020': classified['2020'],
-  '2023': classified['2023']
-};
-
-// VISUALIZATION PARAMETERS
-
-var lulcVis = {
-  min: 0,
-  max: 3,
-  palette: ['red', 'green', 'yellow', 'blue']
-};
-
-/*********************************
- * CHANGE DETECTION FUNCTION (GAP-FILLED 2017)
- *********************************/
-function getChangeWithGapFill(y1, y2) {
-  var c1 = classified[y1];
-  if (y1 === '2017') {
-    c1 = c1.unmask(classified['2020']);
-  }
-
-  var c1Remap = c1.unmask(-1).remap([0,1,2,3],[1,2,3,4]);
-  var c2Remap = classified[y2].unmask(-1).remap([0,1,2,3],[1,2,3,4]);
-
-  return c2Remap.subtract(c1Remap).neq(0);
-}
-
-// SIDE PANEL CONTENT
-
-sidePanel.add(ui.Label({
-  value: 'Interactive Land Use and Land Cover (LULC) Mapping \n of Dhaka Division',
-  style: {fontSize: '16px', fontWeight: 'bold'}
-}));
-
-sidePanel.add(ui.Label(
-  'This interactive Map visualizes Land Use and Land Cover (LULC) dynamics in Dhaka Division using Sentinel-2 imagery and Random Forest classification. Users can explore yearly LULC patterns and compare changes between selected years (2017 - 2023)'
-));
-sidePanel.add(ui.Label('Select Years', {fontWeight: 'bold'}));
-
-var yearLeft = ui.Select({
-  items: ['2017', '2020', '2023'],
-  value: '2017'
-});
-
-var yearRight = ui.Select({
-  items: ['2017', '2020', '2023'],
-  value: '2023'
-});
-
-sidePanel.add(ui.Label('Left Map (Earlier Year)'));
-sidePanel.add(yearLeft);
-
-sidePanel.add(ui.Label('Right Map (Later Year)'));
-sidePanel.add(yearRight);
-
-var showChange = ui.Checkbox('Show Change Detection', false);
-sidePanel.add(showChange);
-
-// UPDATE MAPS FUNCTION
-
-function updateMaps() {
-  leftMap.layers().reset();
-  rightMap.layers().reset();
-
-  var y1 = yearLeft.getValue();
-  var y2 = yearRight.getValue();
-
-  // Visualize LULC
-  leftMap.addLayer(
-    classifiedVisual[y1],
-    lulcVis,
-    'LULC ' + y1
-  );
-
-  rightMap.addLayer(
-    classifiedVisual[y2],
-    lulcVis,
-    'LULC ' + y2
-  );
-
-  // Change Detection
-  if (showChange.getValue()) {
-    var change = getChangeWithGapFill(y1, y2);
-    rightMap.addLayer(
-      change,
-      {palette: ['white', 'red']},
-      'Change Detection'
-    );
-  }
-}
-
-yearLeft.onChange(updateMaps);
-yearRight.onChange(updateMaps);
-showChange.onChange(updateMaps);
-
-updateMaps();
-
-// LULC LEGEND (LEFT MAP) ALIGNED + SPACED
-
-var legend = ui.Panel({
-  style: { position: 'bottom-left', padding: '12px', backgroundColor: 'white' } // slightly more padding
-});
-
-legend.add(ui.Label('LULC Classes', {fontWeight: 'bold', fontSize: '16px'})); // bigger title
-
-var labels = ['Settlements', 'Vegetation', 'Bareland', 'Water'];
-var colors = ['red', 'green', 'yellow', 'blue'];
-
-labels.forEach(function(label, i) {
-  var colorBox = ui.Label({
-    style: {
-      backgroundColor: colors[i],
-      padding: '12px',      // bigger color box
-      margin: '0',
-      stretch: 'vertical'
-    }
-  });
-
-  var desc = ui.Label({
-    value: label,
-    style: {
-      margin: '0 0 0 8px', // space between color box and label
-      stretch: 'vertical',
-      fontSize: '14px',     // bigger text
-      fontWeight: 'bold'
-    }
-  });
-
-  var row = ui.Panel({
-    widgets: [colorBox, desc],
-    layout: ui.Panel.Layout.Flow('horizontal'),
-    style: {margin: '0 0 6px 0'} // vertical spacing between rows
-  });
-
-  legend.add(row);
-});
-
-leftMap.add(legend);
-
-
-/*********************************
- * CHANGE DETECTION LEGEND (RIGHT MAP)
- * ALIGNED + SPACED + BORDER FOR WHITE
- *********************************/
-var changeLegend = ui.Panel({
-  style: { position: 'bottom-right', padding: '12px', backgroundColor: 'white' } // more padding
-});
-
-changeLegend.add(ui.Label('Change Detection', {fontWeight: 'bold', fontSize: '16px'})); // bigger title
-
-['No Change','Change'].forEach(function(label,i){
-  var colorBoxStyle = {
-    backgroundColor: i===0 ? 'white':'red', 
-    padding:'12px',        // bigger color box
-    margin:'0', 
-    stretch:'vertical'
-  };
-  
-  // Add border for white color
-  if(i===0) {
-    colorBoxStyle.border = '1px solid black';
-  }
-
-  var colorBox = ui.Label({style: colorBoxStyle});
-
-  var desc = ui.Label({
-    value: label,
-    style: {
-      margin:'0 0 0 8px',  // space between color box and text
-      stretch:'vertical',
-      fontSize: '14px',     // bigger text
-      fontWeight: 'bold'
-    }
-  });
-
-  var row = ui.Panel({
-    widgets:[colorBox, desc],
-    layout: ui.Panel.Layout.Flow('horizontal'),
-    style: {margin: '0 0 6px 0'} // vertical spacing between rows
-  });
-
-  changeLegend.add(row);
-});
-
-rightMap.add(changeLegend);
+The tool is designed to support environmental monitoring, urban growth analysis, and land management by enabling side-by-side comparison of LULC maps and highlighting areas of change over time.
+
+## 🚀 Key Features
+
+- Interactive split-map (slider) comparison of LULC maps  
+- Year-by-year visualization for 2017, 2020, and 2023  
+- Supervised Random Forest land cover classification  
+- Change detection between selected years  
+- Intuitive UI controls and dynamic legends  
+
+## 🗺️ Study Area
+
+- **Location:** Dhaka Division, Bangladesh  
+- **Boundary Source:** FAO GAUL Level-1 Administrative Boundaries  
+
+
+## 🛰️ Data Sources
+
+- **Satellite Imagery:** Sentinel-2 Surface Reflectance (COPERNICUS/S2_SR_HARMONIZED)  
+- **Spatial Resolution:** 10 m  
+- **Temporal Coverage:** 2017, 2020, 2023  
+
+## 🧠 Methodology
+
+1. Annual median composites were generated from Sentinel-2 imagery after filtering by cloud cover.
+2. Training samples were prepared using predefined land cover classes.
+3. A Random Forest classifier (50 trees) was trained using 2023 data.
+4. The trained model was applied to classify LULC for 2017, 2020, and 2023.
+5. Change detection was performed by comparing classified maps between selected years, with gap-filling applied to improve visualization consistency.
+
+## 🌱 Land Use / Land Cover Classes
+
+| Class | Description   |
+|------|---------------|
+| 0    | Settlements   |
+| 1    | Vegetation    |
+| 2    | Bareland      |
+| 3    | Water         |
+
+## 🧭 How the Application Works
+
+- **Left Map:** Displays LULC for an earlier selected year  
+- **Right Map:** Displays LULC for a later selected year  
+- **Year Selectors:** Choose years independently for each map  
+- **Change Detection Toggle:** Highlights areas where land cover has changed  
+- **Legends:** Dynamically explain LULC classes and change detection results  
+
+
+## ▶️ How to Run the Code
+
+1. Open [Google Earth Engine Code Editor](https://code.earthengine.google.com/)
+2. Copy and paste the script into a new GEE script
+3. Ensure training datasets (Settlements, Vegetation, Bareland, Water) are available in your Assets
+4. Click **Run**
+5. Use the UI controls to explore LULC patterns and changes
+
+
+## ⚠️ Notes & Limitations
+
+- Classification accuracy depends on the quality and representativeness of training data.
+- Cloud contamination may still affect some areas despite filtering.
+- The model is trained on 2023 data and applied to earlier years, which may introduce temporal bias.
+
+## 👩🏽‍💻 Author
+
+**Anuoluwapo Kuye**  
+Geospatial Analyst | GIS & Environmental Mapping  
+Built using Google Earth Engine and open satellite data.
+
+## 🛠️ Tools & Technologies
+
+- Google Earth Engine (JavaScript API)
+- Sentinel-2 Satellite Imagery
+- Random Forest Classification
+- FAO GAUL Administrative Boundaries
+
